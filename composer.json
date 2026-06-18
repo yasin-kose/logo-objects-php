@@ -1,0 +1,47 @@
+{
+    "name": "ankapix/logo-objects-php",
+    "description": "Logo Objects REST Service (Tiger / GO / Wings) icin tipli, bagimsiz PHP istemci kutuphanesi - 156 nesnenin tamami icin CRUD ve ozel islemler.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["logo", "tiger", "go", "wings", "erp", "logo-objects", "rest", "php"],
+    "homepage": "https://gitlab.com/Ankapix/logo-object-php",
+    "authors": [
+        {
+            "name": "Yasin Köse",
+            "email": "yasin@uludem.com.tr",
+            "homepage": "https://gitlab.com/Ankapix",
+            "role": "Developer"
+        }
+    ],
+    "support": {
+        "issues": "https://gitlab.com/Ankapix/logo-object-php/-/issues",
+        "source": "https://gitlab.com/Ankapix/logo-object-php"
+    },
+    "require": {
+        "php": ">=7.4",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "LogoObjects\\": "src/"
+        },
+        "classmap": [
+            "src/Clients/"
+        ]
+    },
+    "scripts": {
+        "post-install-cmd": [
+            "@composer dump-autoload --optimize"
+        ],
+        "post-update-cmd": [
+            "@composer dump-autoload --optimize"
+        ]
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "platform": {
+            "php": "7.4.33"
+        }
+    }
+}

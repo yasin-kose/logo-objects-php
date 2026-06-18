@@ -1,0 +1,12 @@
+/vendor/
+composer.lock
+.env
+.env.*
+!.env.example
+*.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+CLAUDE.md
+/tools/
