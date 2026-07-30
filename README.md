@@ -137,6 +137,50 @@ $array = $order->toArray();
 
 Hazır bir access token ile çalışmak için yapılandırmaya `'apiKey' => '...'` verebilirsiniz.
 
+## Hata Yönetimi
+
+Başarısız her istek `LogoObjects\Exception\LogoApiError` türevi bir istisna fırlatır:
+
+| Sınıf | Ne zaman | Ek bilgi |
+|---|---|---|
+| `ValidationError` | 400 + doğrulama hataları | `getValidationErrors()`, `getModelState()` |
+| `AuthenticationError` | 401 / token alınamadı | — |
+| `RateLimitError` | 429 | `getRetryAfter()` |
+| `NetworkError` | cURL/bağlantı hatası | — |
+| `ApiException` | diğer tüm HTTP kodları | — |
+
+Hepsinde `getStatusCode()` ve `getResponse()` (ham ya da çözülmüş sunucu yanıtı) bulunur.
+
+Sunucunun gerekçesi doğrudan mesaja işlenir; Logo'nun `Message` / `ModelState`
+biçimi (ASP.NET) ile eski `message` / `validationErrors` biçimi desteklenir:
+
+```php
+use LogoObjects\Exception\LogoApiError;
+use LogoObjects\Exception\ValidationError;
+
+try {
+    $logo->salesOrders->create($payload);
+} catch (ValidationError $e) {
+    echo $e->getMessage() . PHP_EOL;
+    // The request is invalid. (3 dogrulama hatasi): ~ kodlu indirim bulunamadı.[6]; ...
+
+    foreach ($e->getValidationErrors() as $err) {   // tam liste (mesajda kırpılmış olabilir)
+        echo "  - $err" . PHP_EOL;
+    }
+    foreach ($e->getModelState() as $alan => $hatalar) {  // ['ValError0' => ['...'], ...]
+        echo "  $alan: " . implode(', ', $hatalar) . PHP_EOL;
+    }
+} catch (LogoApiError $e) {
+    echo "HATA (HTTP {$e->getStatusCode()}): {$e->getMessage()}" . PHP_EOL;
+}
+```
+
+Mesaja en fazla 10 madde yazılır, fazlası `... ve N tane daha` ile kısaltılır;
+liste her zaman `getValidationErrors()` ile eksiksiz alınabilir.
+
+`LOGO_DEBUG=1` ortam değişkeni ayarlıysa istek ve ham yanıt gövdeleri STDERR'e
+yazılır (stdout kirletilmez).
+
 ## Örnekler
 
 `examples/` klasörü çalıştırılabilir örnekler içerir (Composer olmadan da çalışır).

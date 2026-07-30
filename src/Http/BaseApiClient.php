@@ -75,12 +75,18 @@ class BaseApiClient
             'Authorization: Basic ' . $this->config['basicAuth'],
         ]);
 
+        Debug::log('<- ' . $status . ' /token');
         if ($status !== 200) {
-            throw new AuthenticationError('Token alinamadi (HTTP ' . $status . ').');
+            $body = json_decode($raw, true);
+            $reason = self::extractMessage(is_array($body) ? $body : null, $status);
+            throw new AuthenticationError(
+                'Token alinamadi (HTTP ' . $status . '): ' . $reason,
+                $body !== null ? $body : $raw
+            );
         }
         $decoded = json_decode($raw, true);
         if (!is_array($decoded) || empty($decoded['access_token'])) {
-            throw new AuthenticationError('Yanitta access_token yok.');
+            throw new AuthenticationError('Yanitta access_token yok.', $decoded !== null ? $decoded : $raw);
         }
         $this->token = (string) $decoded['access_token'];
         return $this->token;
@@ -115,11 +121,13 @@ class BaseApiClient
 
         Debug::log(strtoupper($method) . ' ' . $url);
         list($status, $raw) = $this->execCurl($method, $url, $payload, $headers);
+        Debug::log('<- ' . $status . ' ' . $raw);
 
         if ($status === 401 && !empty($this->config['username'])) {
             $this->authenticate();
             $headers[2] = 'Authorization: Bearer ' . $this->token;
             list($status, $raw) = $this->execCurl($method, $url, $payload, $headers);
+            Debug::log('<- ' . $status . ' ' . $raw . ' (yeniden deneme)');
         }
 
         if ($status < 200 || $status >= 300) {
@@ -133,30 +141,127 @@ class BaseApiClient
         return is_array($decoded) ? $decoded : ['raw' => $raw];
     }
 
+    /** Dogrulama hatalarindan istisna mesajina en fazla kac madde yazilir. */
+    const MAX_MESSAGE_ERRORS = 10;
+
     /**
      * @param string $raw
      */
     protected function throwForStatus(int $status, $raw): void
     {
         $decoded = json_decode((string) $raw, true);
-        $message = 'Istek basarisiz (HTTP ' . $status . ')';
-        if (is_array($decoded) && isset($decoded['message'])) {
-            $message = (string) $decoded['message'];
-        }
+        $body    = is_array($decoded) ? $decoded : null;
+        $message = self::extractMessage($body, $status);
+        $response = $body !== null ? $body : (string) $raw;
+
         switch ($status) {
             case 400:
-                if (is_array($decoded) && isset($decoded['validationErrors']) && is_array($decoded['validationErrors'])) {
-                    throw new ValidationError($message, $decoded['validationErrors']);
+                $val = self::extractValidationErrors($body);
+                if ($val['messages']) {
+                    throw new ValidationError(
+                        self::composeValidationMessage($message, $val['messages']),
+                        $val['messages'],
+                        $response,
+                        $val['modelState']
+                    );
                 }
-                throw new LogoApiError($message, 400, $decoded);
+                throw new LogoApiError($message, 400, $response);
             case 401:
-                throw new AuthenticationError($message);
+                throw new AuthenticationError($message, $response);
             case 429:
-                $retry = is_array($decoded) && isset($decoded['retryAfter']) ? (int) $decoded['retryAfter'] : null;
-                throw new RateLimitError($message, $retry);
+                $retry = null;
+                foreach (['retryAfter', 'Retry-After', 'retry_after'] as $k) {
+                    if ($body !== null && isset($body[$k])) {
+                        $retry = (int) $body[$k];
+                        break;
+                    }
+                }
+                throw new RateLimitError($message, $retry, $response);
             default:
-                throw new ApiException($message . ': ' . (string) $raw, $status, $decoded !== null ? $decoded : $raw);
+                throw new ApiException($message, $status, $response);
         }
+    }
+
+    /**
+     * Sunucu yanitindan insan tarafindan okunabilir hata metnini cikarir.
+     * Logo/ASP.NET "Message" (buyuk M), OAuth ucu "error_description" doner;
+     * eski surumlerle uyum icin kucuk harfli adlar da denenir.
+     *
+     * @param array<string,mixed>|null $body
+     */
+    protected static function extractMessage(?array $body, int $status): string
+    {
+        if ($body !== null) {
+            $keys = ['Message', 'message', 'ExceptionMessage', 'exceptionMessage', 'error_description', 'error', 'Error'];
+            foreach ($keys as $key) {
+                if (isset($body[$key]) && is_scalar($body[$key]) && (string) $body[$key] !== '') {
+                    return (string) $body[$key];
+                }
+            }
+        }
+        return 'Istek basarisiz (HTTP ' . $status . ')';
+    }
+
+    /**
+     * ASP.NET ModelState haritasini (alan => mesajlar) ve duzlestirilmis
+     * mesaj listesini cikarir. Eski "validationErrors" duz dizisi de desteklenir.
+     *
+     * @param  array<string,mixed>|null $body
+     * @return array{modelState:array<string,string[]>,messages:string[]}
+     */
+    protected static function extractValidationErrors(?array $body): array
+    {
+        $modelState = [];
+        $messages   = [];
+        if ($body === null) {
+            return ['modelState' => $modelState, 'messages' => $messages];
+        }
+
+        foreach (['ModelState', 'modelState'] as $key) {
+            if (isset($body[$key]) && is_array($body[$key])) {
+                foreach ($body[$key] as $field => $errors) {
+                    $list = [];
+                    foreach (is_array($errors) ? $errors : [$errors] as $err) {
+                        if (is_scalar($err) && (string) $err !== '') {
+                            $list[] = (string) $err;
+                        }
+                    }
+                    if ($list) {
+                        $modelState[(string) $field] = $list;
+                        $messages = array_merge($messages, $list);
+                    }
+                }
+                break;
+            }
+        }
+
+        if (!$messages && isset($body['validationErrors']) && is_array($body['validationErrors'])) {
+            foreach ($body['validationErrors'] as $err) {
+                if (is_scalar($err) && (string) $err !== '') {
+                    $messages[] = (string) $err;
+                }
+            }
+        }
+
+        return ['modelState' => $modelState, 'messages' => $messages];
+    }
+
+    /**
+     * Dogrulama sebeplerini ana mesaja ekler; uzun listeler madde sayisina gore
+     * kirpilir (karakter bazli kirpma UTF-8'i bozacagi icin kullanilmaz).
+     * Tam liste her zaman ValidationError::getValidationErrors() ile alinabilir.
+     *
+     * @param string[] $messages
+     */
+    protected static function composeValidationMessage(string $message, array $messages): string
+    {
+        $count = count($messages);
+        $shown = array_slice($messages, 0, self::MAX_MESSAGE_ERRORS);
+        $text  = $message . ' (' . $count . ' dogrulama hatasi): ' . implode('; ', $shown);
+        if ($count > self::MAX_MESSAGE_ERRORS) {
+            $text .= '; ... ve ' . ($count - self::MAX_MESSAGE_ERRORS) . ' tane daha';
+        }
+        return $text;
     }
 
     /**
